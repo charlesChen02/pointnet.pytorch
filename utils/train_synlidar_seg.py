@@ -6,12 +6,12 @@ import torch
 import torch.nn.parallel
 import torch.optim as optim
 import torch.utils.data
-from pointnet.dataset import ShapeNetDataset
+from pointnet.synlidar import SynLiDARDataset
 from pointnet.model import PointNetDenseCls, feature_transform_regularizer
 import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
-
+from collections import Counter
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -28,27 +28,28 @@ parser.add_argument('--feature_transform', action='store_true', help="use featur
 
 opt = parser.parse_args()
 print(opt)
+# device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu')
+print(device)
 
 opt.manualSeed = random.randint(1, 10000)  # fix seed
 print("Random Seed: ", opt.manualSeed)
 random.seed(opt.manualSeed)
 torch.manual_seed(opt.manualSeed)
 
-dataset = ShapeNetDataset(
+dataset = SynLiDARDataset(
     root=opt.dataset,
-    classification=False,
-    class_choice=[opt.class_choice])
+    classification=False)
 dataloader = torch.utils.data.DataLoader(
     dataset,
     batch_size=opt.batchSize,
     shuffle=True,
     num_workers=int(opt.workers))
 
-test_dataset = ShapeNetDataset(
+test_dataset = SynLiDARDataset(
     root=opt.dataset,
     classification=False,
-    class_choice=[opt.class_choice],
-    split='test',
+    split='valid',
     data_augmentation=False)
 testdataloader = torch.utils.data.DataLoader(
     test_dataset,
@@ -57,7 +58,7 @@ testdataloader = torch.utils.data.DataLoader(
     num_workers=int(opt.workers))
 
 print(len(dataset), len(test_dataset))
-num_classes = dataset.num_seg_classes
+num_classes = dataset.num_classes
 print('classes', num_classes)
 try:
     os.makedirs(opt.outf)
@@ -73,21 +74,22 @@ if opt.model != '':
 
 optimizer = optim.Adam(classifier.parameters(), lr=0.001, betas=(0.9, 0.999))
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
-classifier.cuda()
+classifier.to(device)
 
 num_batch = len(dataset) / opt.batchSize
 
 for epoch in range(opt.nepoch):
-    scheduler.step()
     for i, data in enumerate(dataloader, 0):
         points, target = data
+        # break
         points = points.transpose(2, 1)
-        points, target = points.cuda(), target.cuda()
+        points, target = points.to(device), target.long().to(device)
         optimizer.zero_grad()
         classifier = classifier.train()
         pred, trans, trans_feat = classifier(points)
         pred = pred.view(-1, num_classes)
-        target = target.view(-1, 1)[:, 0] - 1
+        target = target.view(-1, 1)[:, 0]
+        # count = Counter(target)
         #print(pred.size(), target.size())
         loss = F.nll_loss(pred, target)
         if opt.feature_transform:
@@ -102,43 +104,42 @@ for epoch in range(opt.nepoch):
             j, data = next(enumerate(testdataloader, 0))
             points, target = data
             points = points.transpose(2, 1)
-            points, target = points.cuda(), target.cuda()
+            points, target = points.to(device), target.to(device)
             classifier = classifier.eval()
             pred, _, _ = classifier(points)
             pred = pred.view(-1, num_classes)
-            target = target.view(-1, 1)[:, 0] - 1
-            print(pred.size(), target.size())
+            target = target.view(-1, 1)[:, 0]
             loss = F.nll_loss(pred, target)
             pred_choice = pred.data.max(1)[1]
             correct = pred_choice.eq(target.data).cpu().sum()
             print('[%d: %d/%d] %s loss: %f accuracy: %f' % (epoch, i, num_batch, blue('test'), loss.item(), correct.item()/float(opt.batchSize * 2500)))
-
+    scheduler.step()
     torch.save(classifier.state_dict(), '%s/seg_model_%s_%d.pth' % (opt.outf, opt.class_choice, epoch))
 
-## benchmark mIOU
-shape_ious = []
-for i,data in tqdm(enumerate(testdataloader, 0)):
-    points, target = data
-    points = points.transpose(2, 1)
-    points, target = points.cuda(), target.cuda()
-    classifier = classifier.eval()
-    pred, _, _ = classifier(points)
-    pred_choice = pred.data.max(2)[1]
+# ## benchmark mIOU
+# shape_ious = []
+# for i,data in tqdm(enumerate(testdataloader, 0)):
+#     points, target = data
+#     points = points.transpose(2, 1)
+#     points, target = points.cuda(), target.cuda()
+#     classifier = classifier.eval()
+#     pred, _, _ = classifier(points)
+#     pred_choice = pred.data.max(2)[1]
 
-    pred_np = pred_choice.cpu().data.numpy()
-    target_np = target.cpu().data.numpy() - 1
+#     pred_np = pred_choice.cpu().data.numpy()
+#     target_np = target.cpu().data.numpy() - 1
 
-    for shape_idx in range(target_np.shape[0]):
-        parts = range(num_classes)#np.unique(target_np[shape_idx])
-        part_ious = []
-        for part in parts:
-            I = np.sum(np.logical_and(pred_np[shape_idx] == part, target_np[shape_idx] == part))
-            U = np.sum(np.logical_or(pred_np[shape_idx] == part, target_np[shape_idx] == part))
-            if U == 0:
-                iou = 1 #If the union of groundtruth and prediction points is empty, then count part IoU as 1
-            else:
-                iou = I / float(U)
-            part_ious.append(iou)
-        shape_ious.append(np.mean(part_ious))
+#     for shape_idx in range(target_np.shape[0]):
+#         parts = range(num_classes)#np.unique(target_np[shape_idx])
+#         part_ious = []
+#         for part in parts:
+#             I = np.sum(np.logical_and(pred_np[shape_idx] == part, target_np[shape_idx] == part))
+#             U = np.sum(np.logical_or(pred_np[shape_idx] == part, target_np[shape_idx] == part))
+#             if U == 0:
+#                 iou = 1 #If the union of groundtruth and prediction points is empty, then count part IoU as 1
+#             else:
+#                 iou = I / float(U)
+#             part_ious.append(iou)
+#         shape_ious.append(np.mean(part_ious))
 
-print("mIOU for class {}: {}".format(opt.class_choice, np.mean(shape_ious)))
+# print("mIOU for class {}: {}".format(opt.class_choice, np.mean(shape_ious)))
