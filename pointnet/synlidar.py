@@ -16,7 +16,7 @@ import glob
 class SynLiDARDataset(data.Dataset):
     def __init__(self,
                  root,
-                 npoints=2500,
+                 npoints=6000,
                  classification=False,
                  split='train',
                  data_augmentation=False):

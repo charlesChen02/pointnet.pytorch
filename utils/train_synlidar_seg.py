@@ -28,8 +28,8 @@ parser.add_argument('--feature_transform', action='store_true', help="use featur
 
 opt = parser.parse_args()
 print(opt)
-# device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-device = torch.device('cpu')
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# device = torch.device('cpu')
 print(device)
 
 opt.manualSeed = random.randint(1, 10000)  # fix seed
